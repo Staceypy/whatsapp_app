@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ['go', 'gcc', 'pkg-config', 'sqlite']
+
+[env]
+CGO_ENABLED = '1'
+
+[phases.build]
+cmds = ['CGO_ENABLED=1 go build -ldflags="-s -w" -o server main.go']
+
+[start]
+cmd = './server'
