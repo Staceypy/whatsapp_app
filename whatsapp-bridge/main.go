@@ -15,14 +15,15 @@ import (
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/mdp/qrterminal"
 
 	"bytes"
 
+	"github.com/skip2/go-qrcode"
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
 	"go.mau.fi/whatsmeow/store/sqlstore"
@@ -46,6 +47,12 @@ type Message struct {
 type MessageStore struct {
 	db *sql.DB
 }
+
+// latestQR stores the most recent QR pairing code and a mutex to protect it
+var (
+	latestQR      string
+	latestQRMutex sync.RWMutex
+)
 
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
@@ -678,6 +685,30 @@ func extractDirectPathFromURL(url string) string {
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+	// QR PNG endpoint for reliable scanning during pairing
+	http.HandleFunc("/qr.png", func(w http.ResponseWriter, r *http.Request) {
+		latestQRMutex.RLock()
+		code := latestQR
+		latestQRMutex.RUnlock()
+		if code == "" {
+			http.Error(w, "QR not available", http.StatusNotFound)
+			return
+		}
+		png, err := qrcode.Encode(code, qrcode.Medium, 256)
+		if err != nil {
+			http.Error(w, "Failed to generate QR", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "image/png")
+		w.Write(png)
+	})
+
+	// Simple HTML wrapper to display the QR image
+	http.HandleFunc("/qr", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte("<html><body><h3>Scan to pair WhatsApp</h3><img src=\"/qr.png\" alt=\"QR\"/></body></html>"))
+	})
+
 	// Health check endpoint
 	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		if client.IsConnected() {
@@ -881,8 +912,11 @@ func main() {
 		// Print QR code for pairing with phone
 		for evt := range qrChan {
 			if evt.Event == "code" {
-				fmt.Println("\nScan this QR code with your WhatsApp app:")
-				qrterminal.GenerateHalfBlock(evt.Code, qrterminal.L, os.Stdout)
+				// Save latest QR so it can be rendered via HTTP for reliable scanning
+				latestQRMutex.Lock()
+				latestQR = evt.Code
+				latestQRMutex.Unlock()
+				fmt.Println("QR code available at /qr.png and /qr")
 			} else if evt.Event == "success" {
 				connected <- true
 				break
