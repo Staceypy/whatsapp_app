@@ -1,0 +1,17 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "railpackVersion": "0.7.0",
+    "buildCommand": "CGO_ENABLED=1 go build -o server main.go",
+    "startCommand": "./server"
+  },
+  "deploy": {
+    "healthcheckPath": "/health",
+    "volumes": [
+      {
+        "name": "whatsapp-data",
+        "mountPath": "/app/store"
+      }
+    ]
+  }
+}
