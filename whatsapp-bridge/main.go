@@ -899,6 +899,18 @@ func main() {
 	// Create channel to track connection success
 	connected := make(chan bool, 1)
 
+	// Start REST API server early so platform detects open port and QR endpoints work during pairing
+	portStr := os.Getenv("PORT")
+	if portStr == "" {
+		portStr = "8080"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		logger.Warnf("Invalid PORT '%s', defaulting to 8080", portStr)
+		port = 8080
+	}
+	startRESTServer(client, messageStore, port)
+
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
 		// No ID stored, this is a new client, need to pair with phone
@@ -950,20 +962,6 @@ func main() {
 	}
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
-
-	// Get port from environment variable (Render/Railway provides this)
-	portStr := os.Getenv("PORT")
-	if portStr == "" {
-		portStr = "8080"
-	}
-	port, err := strconv.Atoi(portStr)
-	if err != nil {
-		logger.Warnf("Invalid PORT '%s', defaulting to 8080", portStr)
-		port = 8080
-	}
-
-	// Start REST API server
-	startRESTServer(client, messageStore, port)
 
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
