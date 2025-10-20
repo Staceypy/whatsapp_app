@@ -1,1 +1,1 @@
-web: cd whatsapp-bridge && go run main.go
+web: ./server

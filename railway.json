@@ -1,12 +1,14 @@
-{
-    "deploy": {
-      "startCommand": "cd whatsapp-bridge && go run main.go",
-      "healthcheckPath": "/health"
-    },
-    "volumes": [
-      {
-        "name": "whatsapp-data",
-        "mountPath": "/app/whatsapp-bridge/store"
-      }
-    ]
-  }
+  {
+      "rootDirectory": "whatsapp-bridge",
+      "deploy": {
+        "buildCommand": "go build -o server main.go",
+        "startCommand": "./server",
+        "healthcheckPath": "/health"
+      },
+      "volumes": [
+        {
+          "name": "whatsapp-data",
+          "mountPath": "/app/whatsapp-bridge/store"
+        }
+      ]
+    }
