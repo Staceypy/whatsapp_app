@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -916,10 +917,15 @@ func main() {
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
-	// Get port from environment variable (Railway provides this)
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080"
+	// Get port from environment variable (Render/Railway provides this)
+	portStr := os.Getenv("PORT")
+	if portStr == "" {
+		portStr = "8080"
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		logger.Warnf("Invalid PORT '%s', defaulting to 8080", portStr)
+		port = 8080
 	}
 
 	// Start REST API server
