@@ -2,11 +2,11 @@
   "$schema": "https://railway.com/railway.schema.json",
   "build": {
     "railpackVersion": "0.7.0",
-    "buildCommand": "CGO_ENABLED=1 go build -o server main.go",
-    "startCommand": "./server"
+    "buildCommand": "CGO_ENABLED=1 go build -o server main.go"
   },
   "deploy": {
-    "healthcheckPath": "/health",
+    "startCommand": "./server",
+    "healthcheckPath": "/ready",
     "volumes": [
       {
         "name": "whatsapp-data",

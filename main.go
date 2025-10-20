@@ -720,6 +720,12 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 	})
 
+	// Ready endpoint for platform healthchecks (always OK when process is up)
+	http.HandleFunc("/ready", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("OK"))
+	})
+
 	// Handler for sending messages
 	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
