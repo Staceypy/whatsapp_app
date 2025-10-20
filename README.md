@@ -119,6 +119,7 @@ This application consists of two main components:
 - All message history is stored in a SQLite database within the `whatsapp-bridge/store/` directory
 - The database maintains tables for chats and messages
 - Messages are indexed for efficient searching and retrieval
+- You can run in NO_HISTORY mode to avoid storing incoming messages (see Privacy Options below)
 
 ## Usage
 
@@ -181,3 +182,25 @@ By default, just the metadata of the media is stored in the local database. The 
 - **WhatsApp Out of Sync**: If your WhatsApp messages get out of sync with the bridge, delete both database files (`whatsapp-bridge/store/messages.db` and `whatsapp-bridge/store/whatsapp.db`) and restart the bridge to re-authenticate.
 
 For additional Claude Desktop integration troubleshooting, see the [MCP documentation](https://modelcontextprotocol.io/quickstart/server#claude-for-desktop-integration-issues). The documentation includes helpful tips for checking logs and resolving common issues.
+
+## Privacy Options
+
+### NO_HISTORY Mode
+
+If you only want to use WhatsApp MCP for sending messages without storing your entire message history, you can use NO_HISTORY mode:
+
+```bash
+# Run the WhatsApp bridge with NO_HISTORY=1
+NO_HISTORY=1 go run main.go
+```
+
+In this mode:
+- The bridge will not store any incoming messages or history sync data
+- Only messages you explicitly send through the API will be stored in the database
+- The WhatsApp device session data is still stored (required to maintain your connection)
+- History sync requests to the WhatsApp server are disabled
+
+This is useful if you want to:
+- Use the bridge purely as a sending mechanism
+- Avoid storing your entire WhatsApp history locally
+- Minimize data storage while maintaining functionality

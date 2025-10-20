@@ -684,7 +684,7 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Start a REST API server to expose the WhatsApp client functionality
-func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int) {
+func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int, noHistory bool) {
 	// QR PNG endpoint for reliable scanning during pairing
 	http.HandleFunc("/qr.png", func(w http.ResponseWriter, r *http.Request) {
 		latestQRMutex.RLock()
@@ -757,6 +757,84 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		// Send the message
 		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
 		fmt.Println("Message sent", success, message)
+
+		// If in no-history mode and message was sent successfully, store it in our database
+		if success && noHistory {
+			// Create JID for recipient
+			var recipientJID types.JID
+			var err error
+
+			// Check if recipient is a JID
+			isJID := strings.Contains(req.Recipient, "@")
+
+			if isJID {
+				// Parse the JID string
+				recipientJID, err = types.ParseJID(req.Recipient)
+				if err != nil {
+					fmt.Printf("Error parsing JID for storage: %v\n", err)
+				}
+			} else {
+				// Create JID from phone number
+				recipientJID = types.JID{
+					User:   req.Recipient,
+					Server: "s.whatsapp.net", // For personal chats
+				}
+			}
+
+			// Store the sent message in our database
+			chatJID := recipientJID.String()
+			timestamp := time.Now()
+			sender := client.Store.ID.User
+			msgID := fmt.Sprintf("api-sent-%d", time.Now().UnixNano())
+
+			// Get or create chat - use default logger from client
+			name := GetChatName(client, messageStore, recipientJID, chatJID, nil, sender, client.Log)
+			messageStore.StoreChat(chatJID, name, timestamp)
+
+			// Determine media type if any
+			mediaType := ""
+			filename := ""
+			if req.MediaPath != "" {
+				// Extract file extension
+				fileExt := strings.ToLower(req.MediaPath[strings.LastIndex(req.MediaPath, ".")+1:])
+
+				// Determine media type based on file extension
+				switch fileExt {
+				case "jpg", "jpeg", "png", "gif", "webp":
+					mediaType = "image"
+				case "ogg":
+					mediaType = "audio"
+				case "mp4", "avi", "mov":
+					mediaType = "video"
+				default:
+					mediaType = "document"
+				}
+
+				// Get filename from path
+				filename = req.MediaPath[strings.LastIndex(req.MediaPath, "/")+1:]
+			}
+
+			// Store message
+			err = messageStore.StoreMessage(
+				msgID,
+				chatJID,
+				sender,
+				req.Message,
+				timestamp,
+				true, // isFromMe
+				mediaType,
+				filename,
+				"",  // url
+				nil, // mediaKey
+				nil, // fileSHA256
+				nil, // fileEncSHA256
+				0,   // fileLength
+			)
+
+			if err != nil {
+				fmt.Printf("Failed to store sent message in NO_HISTORY mode: %v\n", err)
+			}
+		}
 		// Set response headers
 		w.Header().Set("Content-Type", "application/json")
 
@@ -840,6 +918,12 @@ func main() {
 	logger := waLog.Stdout("Client", "INFO", true)
 	logger.Infof("Starting WhatsApp client...")
 
+	// Check if we're in no-history mode
+	noHistory := os.Getenv("NO_HISTORY") == "1"
+	if noHistory {
+		logger.Infof("Running in NO_HISTORY mode - only storing messages sent via API")
+	}
+
 	// Create database connection for storing session data
 	dbLog := waLog.Stdout("Database", "INFO", true)
 
@@ -887,12 +971,20 @@ func main() {
 	client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.Message:
-			// Process regular messages
-			handleMessage(client, messageStore, v, logger)
+			// Process regular messages only if not in no-history mode
+			if !noHistory {
+				handleMessage(client, messageStore, v, logger)
+			} else {
+				logger.Debugf("Ignoring incoming message in NO_HISTORY mode")
+			}
 
 		case *events.HistorySync:
-			// Process history sync events
-			handleHistorySync(client, messageStore, v, logger)
+			// Process history sync events only if not in no-history mode
+			if !noHistory {
+				handleHistorySync(client, messageStore, v, logger)
+			} else {
+				logger.Debugf("Ignoring history sync in NO_HISTORY mode")
+			}
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
@@ -912,10 +1004,10 @@ func main() {
 	}
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		logger.Warnf("Invalid PORT '%s', defaulting to 8080", portStr)
-		port = 8080
+		logger.Warnf("Invalid PORT '%s', defaulting to 8082", portStr)
+		port = 8082
 	}
-	startRESTServer(client, messageStore, port)
+	startRESTServer(client, messageStore, port, noHistory)
 
 	// Connect to WhatsApp
 	if client.Store.ID == nil {
@@ -1210,6 +1302,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 
 // Request history sync from the server
 func requestHistorySync(client *whatsmeow.Client) {
+	// Check if we're in no-history mode
+	if os.Getenv("NO_HISTORY") == "1" {
+		fmt.Println("History sync is disabled in NO_HISTORY mode")
+		return
+	}
 	if client == nil {
 		fmt.Println("Client is not initialized. Cannot request history sync.")
 		return
