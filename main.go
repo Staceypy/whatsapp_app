@@ -1258,7 +1258,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				}
 
 				// Log the message content for debugging
-				logger.Infof("Message content: %v, Media Type: %v", content, mediaType)
+				// logger.Infof("Message content: %v, Media Type: %v", content, mediaType)
 
 				// Skip messages with no content and no media
 				if content == "" && mediaType == "" {

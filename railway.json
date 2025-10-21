@@ -12,8 +12,6 @@
         "name": "whatsapp-data",
         "mountPath": "/app/store"
       }
-    ],
-    "environment": {
-      "NO_HISTORY": "1"    }
+    ]
   }
 }
