@@ -204,3 +204,33 @@ This is useful if you want to:
 - Use the bridge purely as a sending mechanism
 - Avoid storing your entire WhatsApp history locally
 - Minimize data storage while maintaining functionality
+
+## API Authentication
+
+The WhatsApp bridge APIs are protected with API key authentication. To use the APIs:
+
+1. Set the `API_KEY` environment variable when running the server
+2. Include this key in the `X-API-Key` header when making API requests
+
+### Example Usage
+
+**Running locally with authentication:**
+```bash
+API_KEY=your_secret_key go run main.go
+```
+
+**Example API call:**
+```bash
+curl -X POST \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: your_secret_key" \
+  -d '{"recipient":"1234567890","message":"Hello"}' \
+  http://localhost:8082/api/send
+```
+
+**Setting up in Railway:**
+1. Add an environment variable in Railway:
+   - Name: `API_KEY`
+   - Value: Generate a strong random string (e.g., `openssl rand -base64 32`)
+
+**Note:** The QR code endpoints (`/qr`, `/qr.png`) and health check endpoints (`/health`, `/ready`) are not protected and can be accessed without authentication.

@@ -8,5 +8,7 @@
     PORT=8080 go run main.go
 5. Run the app in NO_HISTORY mode (only stores messages sent via API)
     NO_HISTORY=1 go run main.go
-6. Run the app with both custom settings
-    PORT=8080 NO_HISTORY=1 go run main.go
+6. Run the app with API authentication
+    API_KEY=your_secret_key go run main.go
+7. Run the app with both custom settings
+    PORT=8080 NO_HISTORY=1 API_KEY=your_secret_key go run main.go

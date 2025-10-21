@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/binary"
 	"encoding/json"
@@ -685,6 +686,37 @@ func extractDirectPathFromURL(url string) string {
 
 // Start a REST API server to expose the WhatsApp client functionality
 func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port int, noHistory bool) {
+	// Get API key from environment variable
+	apiKey := os.Getenv("API_KEY")
+	if apiKey == "" {
+		fmt.Println("Warning: API_KEY not set. APIs are unprotected!")
+	} else {
+		fmt.Println("API authentication enabled")
+	}
+
+	// Create middleware for API key authentication
+	authMiddleware := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			// Skip auth for QR endpoints and health checks
+			if r.URL.Path == "/qr" || r.URL.Path == "/qr.png" ||
+				r.URL.Path == "/health" || r.URL.Path == "/ready" {
+				next(w, r)
+				return
+			}
+
+			// Check for API key if one is configured
+			if apiKey != "" {
+				providedKey := r.Header.Get("X-API-Key")
+				if subtle.ConstantTimeCompare([]byte(providedKey), []byte(apiKey)) != 1 {
+					http.Error(w, "Unauthorized", http.StatusUnauthorized)
+					return
+				}
+			}
+
+			next(w, r)
+		}
+	}
+
 	// QR PNG endpoint for reliable scanning during pairing
 	http.HandleFunc("/qr.png", func(w http.ResponseWriter, r *http.Request) {
 		latestQRMutex.RLock()
@@ -727,7 +759,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 	})
 
 	// Handler for sending messages
-	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/send", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -848,10 +880,10 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Success: success,
 			Message: message,
 		})
-	})
+	}))
 
 	// Handler for downloading media
-	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+	http.HandleFunc("/api/download", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -899,7 +931,7 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 			Filename: filename,
 			Path:     path,
 		})
-	})
+	}))
 
 	// Start the server
 	serverAddr := fmt.Sprintf(":%d", port)
