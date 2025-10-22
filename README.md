@@ -234,3 +234,44 @@ curl -X POST \
    - Value: Generate a strong random string (e.g., `openssl rand -base64 32`)
 
 **Note:** The QR code endpoints (`/qr`, `/qr.png`) and health check endpoints (`/health`, `/ready`) are not protected and can be accessed without authentication.
+
+## Connection Status Monitoring
+
+The WhatsApp bridge now includes connection status monitoring to help you track how long you've been connected and when you might need to reconnect.
+
+### Status Endpoints
+
+- **`/status`** - Human-readable HTML status page
+- **`/api/status`** - JSON status data for programmatic access
+
+### Status Information
+
+The status includes:
+- **Connection duration** - How long you've been connected
+- **Last activity** - When the last WhatsApp activity occurred
+- **Warning levels** - Alerts about potential disconnection
+- **Estimated disconnect time** - When WhatsApp might disconnect (typically after 20 days of inactivity)
+
+### Warning Levels
+
+- **🟢 OK** - More than 14 days until estimated disconnect
+- **🟡 NOTICE** - 7-14 days until estimated disconnect  
+- **🟠 WARNING** - 1-7 days until estimated disconnect
+- **🔴 CRITICAL** - Less than 1 day until estimated disconnect
+
+### Example Status Response
+
+```json
+{
+  "connected": true,
+  "connected_for": "2d 5h 30m",
+  "last_activity": "2024-01-15T10:30:00Z",
+  "time_since_activity": "1h 15m",
+  "estimated_disconnect": "2024-02-04T10:30:00Z",
+  "warning_level": "ok"
+}
+```
+
+### Automatic Logging
+
+The bridge automatically logs status information every hour, including warnings when the connection might be at risk.

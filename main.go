@@ -55,6 +55,63 @@ var (
 	latestQRMutex sync.RWMutex
 )
 
+// Connection tracking
+var (
+	connectionStartTime time.Time
+	lastActivityTime    time.Time
+	connectionMutex     sync.RWMutex
+)
+
+// Persisted connection lifecycle
+var (
+	firstAuthenticatedAt    time.Time
+	currentSessionStartedAt time.Time
+)
+
+type persistedConnectionStatus struct {
+	FirstAuthenticatedAt    string `json:"first_authenticated_at"`
+	CurrentSessionStartedAt string `json:"current_session_started_at"`
+}
+
+func loadPersistedConnectionStatus() {
+	// ensure store exists
+	_ = os.MkdirAll("store", 0755)
+	data, err := os.ReadFile("store/connection_status.json")
+	if err != nil {
+		return
+	}
+	var p persistedConnectionStatus
+	if err := json.Unmarshal(data, &p); err != nil {
+		return
+	}
+	if p.FirstAuthenticatedAt != "" {
+		if t, err := time.Parse(time.RFC3339, p.FirstAuthenticatedAt); err == nil {
+			firstAuthenticatedAt = t
+		}
+	}
+	if p.CurrentSessionStartedAt != "" {
+		if t, err := time.Parse(time.RFC3339, p.CurrentSessionStartedAt); err == nil {
+			currentSessionStartedAt = t
+			connectionStartTime = t
+		}
+	}
+}
+
+func savePersistedConnectionStatus() {
+	p := persistedConnectionStatus{}
+	if !firstAuthenticatedAt.IsZero() {
+		p.FirstAuthenticatedAt = firstAuthenticatedAt.UTC().Format(time.RFC3339)
+	}
+	if !currentSessionStartedAt.IsZero() {
+		p.CurrentSessionStartedAt = currentSessionStartedAt.UTC().Format(time.RFC3339)
+	}
+	b, err := json.MarshalIndent(p, "", "  ")
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile("store/connection_status.json", b, 0644)
+}
+
 // Initialize message store
 func NewMessageStore() (*MessageStore, error) {
 	// Create directory for database if it doesn't exist
@@ -758,6 +815,70 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		w.Write([]byte("OK"))
 	})
 
+	// Connection status endpoint
+	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+		status := getConnectionStatus()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(status)
+	})
+
+	// Human-readable status endpoint
+	http.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		status := getConnectionStatus()
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+		var html string
+		if status.Connected {
+			html = fmt.Sprintf(`
+<html>
+<head><title>WhatsApp Bridge Status</title></head>
+<body>
+<h2>WhatsApp Bridge Status</h2>
+<p><strong>Status:</strong> <span style="color: green;">Connected</span></p>
+<p><strong>Connected for (current session):</strong> %s</p>
+%s
+<p><strong>Last activity:</strong> %s (%s ago)</p>
+<p><strong>Warning level:</strong> <span style="color: %s;">%s</span></p>
+`,
+				formatDuration(status.ConnectedFor),
+				func() string {
+					if !status.FirstAuthenticatedAt.IsZero() {
+						return fmt.Sprintf("<p><strong>Since first authentication:</strong> %s (at %s)</p>",
+							formatDuration(status.UptimeSinceFirstAuth),
+							status.FirstAuthenticatedAt.Format("2006-01-02 15:04:05"))
+					}
+					return ""
+				}(),
+				status.LastActivity.Format("2006-01-02 15:04:05"),
+				formatDuration(status.TimeSinceActivity),
+				getWarningColor(status.WarningLevel),
+				status.WarningLevel,
+			)
+
+			if !status.EstimatedDisconnect.IsZero() {
+				timeUntil := time.Until(status.EstimatedDisconnect)
+				html += fmt.Sprintf(`<p><strong>Estimated disconnect:</strong> %s (%s remaining)</p>`,
+					status.EstimatedDisconnect.Format("2006-01-02 15:04:05"),
+					formatDuration(timeUntil),
+				)
+			}
+
+			html += `</body></html>`
+		} else {
+			html = `
+<html>
+<head><title>WhatsApp Bridge Status</title></head>
+<body>
+<h2>WhatsApp Bridge Status</h2>
+<p><strong>Status:</strong> <span style="color: red;">Not Connected</span></p>
+<p>Please scan the QR code to connect.</p>
+</body>
+</html>`
+		}
+
+		w.Write([]byte(html))
+	})
+
 	// Handler for sending messages
 	http.HandleFunc("/api/send", authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		// Only allow POST requests
@@ -785,6 +906,9 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		}
 
 		fmt.Println("Received request to send message", req.Message, req.MediaPath)
+
+		// Update connection tracking for API activity
+		updateConnectionTime()
 
 		// Send the message
 		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
@@ -999,8 +1123,14 @@ func main() {
 	}
 	defer messageStore.Close()
 
+	// Load persisted connection lifecycle
+	loadPersistedConnectionStatus()
+
 	// Setup event handling for messages and history sync
 	client.AddEventHandler(func(evt interface{}) {
+		// Update connection tracking for any activity
+		updateConnectionTime()
+
 		switch v := evt.(type) {
 		case *events.Message:
 			// Process regular messages only if not in no-history mode
@@ -1020,9 +1150,25 @@ func main() {
 
 		case *events.Connected:
 			logger.Infof("Connected to WhatsApp")
+			// Reset connection tracking on new connection
+			connectionMutex.Lock()
+			connectionStartTime = time.Now()
+			lastActivityTime = time.Now()
+			// Set lifecycle times
+			if firstAuthenticatedAt.IsZero() {
+				firstAuthenticatedAt = time.Now()
+			}
+			currentSessionStartedAt = connectionStartTime
+			connectionMutex.Unlock()
+			savePersistedConnectionStatus()
 
 		case *events.LoggedOut:
 			logger.Warnf("Device logged out, please scan QR code to log in again")
+			// Reset connection tracking on logout
+			connectionMutex.Lock()
+			connectionStartTime = time.Time{}
+			lastActivityTime = time.Time{}
+			connectionMutex.Unlock()
 		}
 	})
 
@@ -1093,11 +1239,40 @@ func main() {
 
 	fmt.Println("\n✓ Connected to WhatsApp! Type 'help' for commands.")
 
+	// Start periodic status logging
+	go func() {
+		ticker := time.NewTicker(1 * time.Hour) // Log status every hour
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ticker.C:
+				status := getConnectionStatus()
+				if status.Connected {
+					logger.Infof("Status: Connected for %s, Last activity: %s ago, Warning: %s",
+						formatDuration(status.ConnectedFor),
+						formatDuration(status.TimeSinceActivity),
+						status.WarningLevel)
+
+					// Log warnings based on warning level
+					if status.WarningLevel == "critical" {
+						logger.Warnf("CRITICAL: WhatsApp may disconnect soon! Last activity: %s",
+							formatDuration(status.TimeSinceActivity))
+					} else if status.WarningLevel == "warning" {
+						logger.Warnf("WARNING: WhatsApp connection may be at risk. Last activity: %s",
+							formatDuration(status.TimeSinceActivity))
+					}
+				}
+			}
+		}
+	}()
+
 	// Create a channel to keep the main goroutine alive
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGINT, syscall.SIGTERM)
 
 	fmt.Println("REST server is running. Press Ctrl+C to disconnect and exit.")
+	fmt.Println("Status available at: /status (HTML) or /api/status (JSON)")
 
 	// Wait for termination signal
 	<-exitChan
@@ -1535,4 +1710,102 @@ func placeholderWaveform(duration uint32) []byte {
 	}
 
 	return waveform
+}
+
+// ConnectionStatus represents the current connection status
+type ConnectionStatus struct {
+	Connected           bool          `json:"connected"`
+	ConnectedFor        time.Duration `json:"connected_for"`
+	LastActivity        time.Time     `json:"last_activity"`
+	TimeSinceActivity   time.Duration `json:"time_since_activity"`
+	EstimatedDisconnect time.Time     `json:"estimated_disconnect,omitempty"`
+	WarningLevel        string        `json:"warning_level"`
+	// New lifecycle metrics
+	FirstAuthenticatedAt  time.Time     `json:"first_authenticated_at,omitempty"`
+	UptimeSinceFirstAuth  time.Duration `json:"uptime_since_first_auth,omitempty"`
+	CurrentSessionStarted time.Time     `json:"current_session_started_at,omitempty"`
+}
+
+// Update connection tracking
+func updateConnectionTime() {
+	connectionMutex.Lock()
+	defer connectionMutex.Unlock()
+
+	now := time.Now()
+	if connectionStartTime.IsZero() {
+		connectionStartTime = now
+	}
+	lastActivityTime = now
+}
+
+// Get connection status
+func getConnectionStatus() ConnectionStatus {
+	connectionMutex.RLock()
+	defer connectionMutex.RUnlock()
+
+	now := time.Now()
+	status := ConnectionStatus{
+		Connected:         !connectionStartTime.IsZero(),
+		ConnectedFor:      now.Sub(connectionStartTime),
+		LastActivity:      lastActivityTime,
+		TimeSinceActivity: now.Sub(lastActivityTime),
+	}
+
+	// Calculate estimated disconnect time (WhatsApp typically disconnects after ~20 days of inactivity)
+	// We'll estimate based on last activity + 20 days
+	if !lastActivityTime.IsZero() {
+		status.EstimatedDisconnect = lastActivityTime.Add(20 * 24 * time.Hour)
+
+		// Determine warning level
+		timeUntilDisconnect := status.EstimatedDisconnect.Sub(now)
+		if timeUntilDisconnect < 24*time.Hour {
+			status.WarningLevel = "critical"
+		} else if timeUntilDisconnect < 7*24*time.Hour {
+			status.WarningLevel = "warning"
+		} else if timeUntilDisconnect < 14*24*time.Hour {
+			status.WarningLevel = "notice"
+		} else {
+			status.WarningLevel = "ok"
+		}
+	}
+
+	// Lifecycle metrics
+	if !firstAuthenticatedAt.IsZero() {
+		status.FirstAuthenticatedAt = firstAuthenticatedAt
+		status.UptimeSinceFirstAuth = now.Sub(firstAuthenticatedAt)
+	}
+	if !currentSessionStartedAt.IsZero() {
+		status.CurrentSessionStarted = currentSessionStartedAt
+	}
+
+	return status
+}
+
+// Format duration for display
+func formatDuration(d time.Duration) string {
+	days := int(d.Hours() / 24)
+	hours := int(d.Hours()) % 24
+	minutes := int(d.Minutes()) % 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, minutes)
+	} else if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, minutes)
+	} else {
+		return fmt.Sprintf("%dm", minutes)
+	}
+}
+
+// Get warning color for HTML display
+func getWarningColor(level string) string {
+	switch level {
+	case "critical":
+		return "red"
+	case "warning":
+		return "orange"
+	case "notice":
+		return "yellow"
+	default:
+		return "green"
+	}
 }
