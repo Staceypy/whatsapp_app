@@ -295,6 +295,32 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		}
 	}
 
+	// Validate recipient existence on WhatsApp for direct chats
+	if recipientJID.Server == "s.whatsapp.net" {
+		// Bounded remote validation to avoid hanging
+		type checkResult struct {
+			res []types.IsOnWhatsAppResponse
+			err error
+		}
+		ch := make(chan checkResult, 1)
+		go func() {
+			res, err := client.IsOnWhatsApp([]string{recipientJID.String()})
+			ch <- checkResult{res, err}
+		}()
+
+		select {
+		case cr := <-ch:
+			if cr.err != nil {
+				return false, fmt.Sprintf("Failed to verify recipient: %v", cr.err)
+			}
+			if len(cr.res) == 0 || !cr.res[0].IsIn {
+				return false, fmt.Sprintf("Recipient %s is not a valid WhatsApp account", recipient)
+			}
+		case <-time.After(3 * time.Second):
+			return false, "Recipient verification timed out"
+		}
+	}
+
 	msg := &waProto.Message{}
 
 	// Check if we have media to send
@@ -348,8 +374,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 			mimeType = "application/octet-stream"
 		}
 
-		// Upload media to WhatsApp servers
-		resp, err := client.Upload(context.Background(), mediaData, mediaType)
+		// Upload media to WhatsApp servers (with timeout)
+		upCtx, upCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer upCancel()
+		resp, err := client.Upload(upCtx, mediaData, mediaType)
 		if err != nil {
 			return false, fmt.Sprintf("Error uploading media: %v", err)
 		}
@@ -427,8 +455,10 @@ func sendWhatsAppMessage(client *whatsmeow.Client, recipient string, message str
 		msg.Conversation = proto.String(message)
 	}
 
-	// Send message
-	_, err = client.SendMessage(context.Background(), recipientJID, msg)
+	// Send message (with timeout)
+	sendCtx, sendCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer sendCancel()
+	_, err = client.SendMessage(sendCtx, recipientJID, msg)
 
 	if err != nil {
 		return false, fmt.Sprintf("Error sending message: %v", err)
@@ -910,8 +940,35 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 		// Update connection tracking for API activity
 		updateConnectionTime()
 
-		// Send the message
-		success, message := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+		// Hard timeout for entire send operation (default 12s, configurable)
+		timeout := 12 * time.Second
+		if v := os.Getenv("SEND_TIMEOUT_SEC"); v != "" {
+			if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+				timeout = time.Duration(secs) * time.Second
+			}
+		}
+
+		type sendResult struct {
+			success bool
+			message string
+		}
+		resCh := make(chan sendResult, 1)
+		go func() {
+			success, msg := sendWhatsAppMessage(client, req.Recipient, req.Message, req.MediaPath)
+			resCh <- sendResult{success, msg}
+		}()
+
+		var success bool
+		var message string
+		select {
+		case r := <-resCh:
+			success = r.success
+			message = r.message
+		case <-time.After(timeout):
+			success = false
+			message = fmt.Sprintf("Send timed out after %s", timeout.String())
+		}
+
 		fmt.Println("Message sent", success, message)
 
 		// If in no-history mode and message was sent successfully, store it in our database
@@ -996,7 +1053,11 @@ func startRESTServer(client *whatsmeow.Client, messageStore *MessageStore, port 
 
 		// Set appropriate status code
 		if !success {
-			w.WriteHeader(http.StatusInternalServerError)
+			if strings.Contains(strings.ToLower(message), "timed out") {
+				w.WriteHeader(http.StatusGatewayTimeout)
+			} else {
+				w.WriteHeader(http.StatusBadRequest)
+			}
 		}
 
 		// Send response
